@@ -11,7 +11,7 @@ st.set_page_config(page_title="Lector de Etiquetas (OCR Local)", layout="wide")
 st.title("📦 Extractor de Datos con OCR Local (Ilimitado)")
 st.write("Procesa imágenes ilimitadas de forma local sin depender de APIs ni pagar cuotas.")
 
-# Cargar motor OCR local en memoria (se ejecuta una sola vez)
+# Cargar motor OCR local en memoria
 @st.cache_resource
 def cargar_lector_ocr():
     return easyocr.Reader(['es', 'en'], gpu=False)
@@ -38,39 +38,52 @@ if uploaded_files:
     )
     
     archivos_a_procesar = [file for file in uploaded_files if file.name in seleccionados]
+
 def extraer_datos_local(image):
     img_array = np.array(image)
     lineas_texto = reader.readtext(img_array, detail=0)
     texto_completo = "\n".join(lineas_texto)
     
-    # 1. CP de entrega (busca prioritariamente 'CP:' seguido de 4 dígitos hacia el final de la etiqueta)
-    cp_match = re.search(r'CP[:\s\n]*(\d{4})\b(?=[\s\n]*[A-Z\s]+(?:SUR|NORTE|ESTE|OESTE|RESIDENCIAL))', texto_completo, re.IGNORECASE)
-    if not cp_match:
-        cp_matches = re.findall(r'\bCP[:\s\n]*(\d{4})\b', texto_completo, re.IGNORECASE)
-        cp_val = cp_matches[-1] if cp_matches else "" # Toma el último CP (destinatario)
-    else:
-        cp_val = cp_match.group(1)
+    # Normalización para evitar falsos negativos
+    texto_unificado = " ".join(lineas_texto)
+    texto_normalizado = texto_unificado.replace('ZOO', '200').replace('ZO0', '200').replace('Z00', '200')
+    
+    # 1. Pack ID (soporta espacios intermedios leídos por EasyOCR como "20000 15089921973")
+    pack_match = re.search(r'(?:Pack\s*ID|PeckID|Paok|Pack)[:\s]*[A-Z0-9,\s]*?(\d[\d\s]{9,20}\d)', texto_normalizado, re.IGNORECASE)
+    pack_id = ""
+    if pack_match:
+        pack_id = re.sub(r'\D', '', pack_match.group(1))
+    if not pack_id or len(pack_id) < 10:
+        alt_pack = re.search(r'\b(20000\d{10,12}|150\d{8,12})\b', re.sub(r'\s+', '', texto_normalizado))
+        if alt_pack:
+            pack_id = alt_pack.group(1)
 
-    # 2. Pack ID (Pack ID suele empezar con 20000 o 150)
-    pack_match = re.search(r'(?:20000\d{10,12}|150\d{8,12})', texto_completo)
-    
-    # 3. Envío ID (Tracking de Mercado Envíos suele empezar por 48 o 49 y tener 11 dígitos)
-    envio_match = re.search(r'(?:48\d{9}|49\d{9})', texto_completo.replace(" ", ""))
-    
-    # 4. Dirección
+    # 2. Envío ID / Tracking (búsqueda mejorada de 11 dígitos)
+    envio_match = re.search(r'(?:Env[íıao]o|Tracking|Enva|Envlo)[:\s]*([0-9\s]+)', texto_normalizado, re.IGNORECASE)
+    envio_id = ""
+    if envio_match:
+        envio_id = re.sub(r'\D', '', envio_match.group(1))
+    if not envio_id or len(envio_id) < 8:
+        alt_envio = re.search(r'\b(48\d{9}|49\d{9})\b', re.sub(r'\s+', '', texto_normalizado))
+        if alt_envio:
+            envio_id = alt_envio.group(1)
+
+    # 3. Código Postal (prioriza el CP del destinatario hacia la parte inferior)
+    cp_matches = re.findall(r'CP[:\s]*(\d{4})\b', texto_completo, re.IGNORECASE)
+    if not cp_matches:
+        cp_matches = re.findall(r'\b(\d{4})\b', texto_completo)
+    cp_val = cp_matches[-1] if cp_matches else ""
+
+    # 4. Dirección, Destinatario y Referencia
     dir_match = re.search(r'Direcci[oó]n[:\s]*(.*)', texto_completo, re.IGNORECASE)
-    
-    # 5. Destinatario
     dest_match = re.search(r'Destina[tT]ar[iıo]+[:\s]*(.*)', texto_completo, re.IGNORECASE)
-    
-    # 6. Referencia
     ref_match = re.search(r'Referenc[iı]a[:\s]*(.*)', texto_completo, re.IGNORECASE)
-    
+
     servicio = "FLEX" if "FLEX" in texto_completo.upper() else ""
-    
+
     return {
-        "pack_id": pack_match.group(0) if pack_match else "",
-        "envio_id": envio_match.group(0) if envio_match else "",
+        "pack_id": pack_id,
+        "envio_id": envio_id,
         "destinatario": dest_match.group(1).strip() if dest_match else "",
         "direccion": dir_match.group(1).strip() if dir_match else "",
         "referencia": ref_match.group(1).strip() if ref_match else "",
@@ -99,6 +112,13 @@ if archivos_a_procesar:
         if resultados:
             df = pd.DataFrame(resultados)
             
+            # Ordenar columnas para la vista
+            columnas_orden = [
+                'pack_id', 'envio_id', 'destinatario', 'direccion', 
+                'referencia', 'cp', 'servicio', 'texto_extraido', 'archivo'
+            ]
+            df = df.reindex(columns=[col for col in columnas_orden if col in df.columns])
+            
             st.success("¡Procesamiento local completado!")
             
             st.subheader("📊 Datos Extraídos")
@@ -108,7 +128,7 @@ if archivos_a_procesar:
             csv_data = df.to_csv(index=False).encode('utf-8')
             st.download_button(
                 label="📥 Descargar Tabla en CSV",
-                data=excel_data if 'excel_data' in locals() else csv_data,
+                data=csv_data,
                 file_name="etiquetas_procesadas_local.csv",
                 mime="text/csv"
             )
