@@ -5,7 +5,7 @@ import streamlit as st
 import numpy as np
 from PIL import Image
 import easyocr
-
+import cv2
 st.set_page_config(page_title="Lector de Etiquetas (OCR Local)", layout="wide")
 
 st.title("📦 Extractor de Datos con OCR Local (Ilimitado)")
@@ -39,58 +39,105 @@ if uploaded_files:
     
     archivos_a_procesar = [file for file in uploaded_files if file.name in seleccionados]
 
+
+
+
+def preprocesar_imagen(pil_image):
+  # Convertir a escala de grises y aumentar contraste para etiquetas térmicas
+  img_cv = np.array(pil_image.convert('RGB'))
+  gray = cv2.cvtColor(img_cv, cv2.COLOR_RGB2GRAY)
+  # Aumentar contraste
+  gray = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+  return gray
+
+
 def extraer_datos_local(image):
-    img_array = np.array(image)
-    lineas_texto = reader.readtext(img_array, detail=0)
-    texto_completo = "\n".join(lineas_texto)
-    
-    # Normalización para evitar falsos negativos
-    texto_unificado = " ".join(lineas_texto)
-    texto_normalizado = texto_unificado.replace('ZOO', '200').replace('ZO0', '200').replace('Z00', '200')
-    
-    # 1. Pack ID (soporta espacios intermedios leídos por EasyOCR como "20000 15089921973")
-    pack_match = re.search(r'(?:Pack\s*ID|PeckID|Paok|Pack)[:\s]*[A-Z0-9,\s]*?(\d[\d\s]{9,20}\d)', texto_normalizado, re.IGNORECASE)
-    pack_id = ""
-    if pack_match:
-        pack_id = re.sub(r'\D', '', pack_match.group(1))
-    if not pack_id or len(pack_id) < 10:
-        alt_pack = re.search(r'\b(20000\d{10,12}|150\d{8,12})\b', re.sub(r'\s+', '', texto_normalizado))
-        if alt_pack:
-            pack_id = alt_pack.group(1)
+  # 1. Preprocesar imagen antes de pasar a EasyOCR
+  img_procesada = preprocesar_imagen(image)
+  lineas_texto = reader.readtext(img_procesada, detail=0)
 
-    # 2. Envío ID / Tracking (búsqueda mejorada de 11 dígitos)
-    envio_match = re.search(r'(?:Env[íıao]o|Tracking|Enva|Envlo)[:\s]*([0-9\s]+)', texto_normalizado, re.IGNORECASE)
-    envio_id = ""
-    if envio_match:
-        envio_id = re.sub(r'\D', '', envio_match.group(1))
-    if not envio_id or len(envio_id) < 8:
-        alt_envio = re.search(r'\b(48\d{9}|49\d{9})\b', re.sub(r'\s+', '', texto_normalizado))
-        if alt_envio:
-            envio_id = alt_envio.group(1)
+  texto_completo = "\n".join(lineas_texto)
+  # Unificar saltos de línea para búsquedas multilínea
+  texto_unificado = " ".join(lineas_texto)
+  texto_norm = (
+      texto_unificado.replace("ZOO", "200")
+      .replace("ZO0", "200")
+      .replace("Z00", "200")
+  )
 
-    # 3. Código Postal (prioriza el CP del destinatario hacia la parte inferior)
-    cp_matches = re.findall(r'CP[:\s]*(\d{4})\b', texto_completo, re.IGNORECASE)
-    if not cp_matches:
-        cp_matches = re.findall(r'\b(\d{4})\b', texto_completo)
-    cp_val = cp_matches[-1] if cp_matches else ""
+  # 1. Pack ID (15 a 17 dígitos, buscando patrón 20000...)
+  pack_id = ""
+  pack_match = re.search(
+      r"(?:Pack\s*ID|PackID|PeckID)[:\s]*(\d[\d\s]{10,20})",
+      texto_norm,
+      re.IGNORECASE,
+  )
+  if pack_match:
+    pack_id = re.sub(r"\D", "", pack_match.group(1))
+  if not pack_id or len(pack_id) < 12:
+    alt_pack = re.search(r"\b(20000\d{10,12})\b", re.sub(r"\s+", "", texto_norm))
+    if alt_pack:
+      pack_id = alt_pack.group(1)
 
-    # 4. Dirección, Destinatario y Referencia
-    dir_match = re.search(r'Direcci[oó]n[:\s]*(.*)', texto_completo, re.IGNORECASE)
-    dest_match = re.search(r'Destina[tT]ar[iıo]+[:\s]*(.*)', texto_completo, re.IGNORECASE)
-    ref_match = re.search(r'Referenc[iı]a[:\s]*(.*)', texto_completo, re.IGNORECASE)
+  # 2. Envío ID / Tracking (11 dígitos que suelen empezar por 48 o 49)
+  envio_id = ""
+  envio_match = re.search(
+      r"(?:Env[íiao]o|Tracking)[:\s]*([0-9\s]{8,15})", texto_norm, re.IGNORECASE
+  )
+  if envio_match:
+    envio_id = re.sub(r"\D", "", envio_match.group(1))
+  if not envio_id or len(envio_id) < 9:
+    alt_envio = re.search(
+        r"\b(4[89]\d{9})\b", re.sub(r"\s+", "", texto_norm)
+    )
+    if alt_envio:
+      envio_id = alt_envio.group(1)
 
-    servicio = "FLEX" if "FLEX" in texto_completo.upper() else ""
+  # 3. Código Postal Destino (CP: 1XXX)
+  cp_val = ""
+  cp_match = re.search(r"CP[:\s]*(\d{4})", texto_norm, re.IGNORECASE)
+  if cp_match:
+    cp_val = cp_match.group(1)
+  else:
+    # Buscar el CP que no sea el de Lanús (1824) si hay varios
+    cps = re.findall(r"\b(1\d{3})\b", texto_completo)
+    cps_filtrados = [c for c in cps if c != "1824"]
+    cp_val = cps_filtrados[-1] if cps_filtrados else (cps[-1] if cps else "")
 
-    return {
-        "pack_id": pack_id,
-        "envio_id": envio_id,
-        "destinatario": dest_match.group(1).strip() if dest_match else "",
-        "direccion": dir_match.group(1).strip() if dir_match else "",
-        "referencia": ref_match.group(1).strip() if ref_match else "",
-        "cp": cp_val,
-        "servicio": servicio,
-        "texto_extraido": texto_completo
-    }
+  # 4. Dirección (captura multilínea hasta Barrio/Referencia/Destinatario)
+  dir_match = re.search(
+      r"Direccion[:\s]*(.*?)(?=Barrio|Referencia|Destinatario|$)",
+      texto_unificado,
+      re.IGNORECASE,
+  )
+  direccion = dir_match.group(1).strip() if dir_match else ""
+
+  # 5. Referencia
+  ref_match = re.search(
+      r"Referencia[:\s]*(.*?)(?=Destinatario|$)", texto_unificado, re.IGNORECASE
+  )
+  referencia = ref_match.group(1).strip() if ref_match else ""
+
+  # 6. Destinatario
+  dest_match = re.search(
+      r"Destinatario[:\s]*(.*?)(?=\([A-Z0-9]+\)|$)",
+      texto_unificado,
+      re.IGNORECASE,
+  )
+  destinatario = dest_match.group(1).strip() if dest_match else ""
+
+  servicio = "FLEX" if "FLEX" in texto_completo.upper() else ""
+
+  return {
+      "pack_id": pack_id,
+      "envio_id": envio_id,
+      "destinatario": destinatario,
+      "direccion": direccion,
+      "referencia": referencia,
+      "cp": cp_val,
+      "servicio": servicio,
+      "texto_extraido": texto_completo,
+  }
 
 # Botón para iniciar el procesamiento
 if archivos_a_procesar:
