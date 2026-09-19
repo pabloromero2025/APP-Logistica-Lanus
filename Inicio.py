@@ -38,7 +38,6 @@ if uploaded_files:
     )
     
     archivos_a_procesar = [file for file in uploaded_files if file.name in seleccionados]
-
 def extraer_datos_local(image):
     img_array = np.array(image)
     lineas_texto = reader.readtext(img_array, detail=0)
@@ -79,7 +78,6 @@ def extraer_datos_local(image):
         "servicio": servicio,
         "texto_extraido": texto_completo
     }
-
 
 # Botón para iniciar el procesamiento
 if archivos_a_procesar:
