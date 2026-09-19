@@ -41,51 +41,45 @@ if uploaded_files:
 
 def extraer_datos_local(image):
     img_array = np.array(image)
-    
-    # Extraer texto de la imagen
     lineas_texto = reader.readtext(img_array, detail=0)
     texto_completo = "\n".join(lineas_texto)
     
-    # Reemplazo de caracteres comúnmente confundidos por el OCR
-    texto_normalizado = texto_completo.replace('ZOO', '200').replace('ZO0', '200').replace('Z00', '200')
-    
-    # Búsqueda de Pack ID (flexibilidad para capturar secuencias numéricas largas)
-    pack_match = re.search(r'(?:Pack\s*ID|Pack)[:\s]*[A-Z0-9]*\s*(\d{10,18})', texto_normalizado, re.IGNORECASE)
-    if not pack_match:
-        pack_match = re.search(r'\b(20000\d{10,12}|150\d{7,12})\b', texto_normalizado)
-        
-    # Búsqueda de Envío ID / Tracking
-    envio_match = re.search(r'(?:Env[íi]o|Tracking)[:\s]*([0-9\sV]+)', texto_normalizado, re.IGNORECASE)
-    envio_id = ""
-    if envio_match:
-        envio_id = re.sub(r'\D', '', envio_match.group(1))
-    if not envio_id or len(envio_id) < 5:
-        alt_envio = re.search(r'\b(480\d{7,10}|48\s*\d{4,10})\b', texto_normalizado)
-        if alt_envio:
-            envio_id = re.sub(r'\D', '', alt_envio.group(1))
-            
-    # Búsqueda de Código Postal (CP)
-    cp_match = re.search(r'\bCP[:\s]*(\d{4})\b', texto_completo, re.IGNORECASE)
+    # 1. CP de entrega (busca prioritariamente 'CP:' seguido de 4 dígitos hacia el final de la etiqueta)
+    cp_match = re.search(r'CP[:\s\n]*(\d{4})\b(?=[\s\n]*[A-Z\s]+(?:SUR|NORTE|ESTE|OESTE|RESIDENCIAL))', texto_completo, re.IGNORECASE)
     if not cp_match:
-        cp_match = re.search(r'\b(\d{4})\b', texto_completo)
-        
-    # Extracción de campos adicionales de la etiqueta
+        cp_matches = re.findall(r'\bCP[:\s\n]*(\d{4})\b', texto_completo, re.IGNORECASE)
+        cp_val = cp_matches[-1] if cp_matches else "" # Toma el último CP (destinatario)
+    else:
+        cp_val = cp_match.group(1)
+
+    # 2. Pack ID (Pack ID suele empezar con 20000 o 150)
+    pack_match = re.search(r'(?:20000\d{10,12}|150\d{8,12})', texto_completo)
+    
+    # 3. Envío ID (Tracking de Mercado Envíos suele empezar por 48 o 49 y tener 11 dígitos)
+    envio_match = re.search(r'(?:48\d{9}|49\d{9})', texto_completo.replace(" ", ""))
+    
+    # 4. Dirección
     dir_match = re.search(r'Direcci[oó]n[:\s]*(.*)', texto_completo, re.IGNORECASE)
-    dest_match = re.search(r'Destinatario[:\s]*(.*)', texto_completo, re.IGNORECASE)
-    ref_match = re.search(r'Referencia[:\s]*(.*)', texto_completo, re.IGNORECASE)
+    
+    # 5. Destinatario
+    dest_match = re.search(r'Destina[tT]ar[iıo]+[:\s]*(.*)', texto_completo, re.IGNORECASE)
+    
+    # 6. Referencia
+    ref_match = re.search(r'Referenc[iı]a[:\s]*(.*)', texto_completo, re.IGNORECASE)
     
     servicio = "FLEX" if "FLEX" in texto_completo.upper() else ""
     
     return {
-        "pack_id": pack_match.group(1) if pack_match else "",
-        "envio_id": envio_id,
+        "pack_id": pack_match.group(0) if pack_match else "",
+        "envio_id": envio_match.group(0) if envio_match else "",
         "destinatario": dest_match.group(1).strip() if dest_match else "",
         "direccion": dir_match.group(1).strip() if dir_match else "",
         "referencia": ref_match.group(1).strip() if ref_match else "",
-        "cp": cp_match.group(1) if cp_match else "",
+        "cp": cp_val,
         "servicio": servicio,
         "texto_extraido": texto_completo
     }
+
 
 # Botón para iniciar el procesamiento
 if archivos_a_procesar:
