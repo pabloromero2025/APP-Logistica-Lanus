@@ -29,17 +29,14 @@ uploaded_files = st.file_uploader(
 archivos_a_procesar = []
 
 if uploaded_files:
-    # Crear lista con los nombres de todos los archivos subidos
     nombres_archivos = [file.name for file in uploaded_files]
     
-    # Selector múltiple con todas las fotos seleccionadas por defecto
     seleccionados = st.multiselect(
         "2. Selecciona qué fotos deseas procesar:",
         options=nombres_archivos,
         default=nombres_archivos
     )
     
-    # Filtrar solo los archivos que el usuario eligió en el multiselect
     archivos_a_procesar = [file for file in uploaded_files if file.name in seleccionados]
 
 def extraer_datos_local(image):
@@ -49,16 +46,42 @@ def extraer_datos_local(image):
     lineas_texto = reader.readtext(img_array, detail=0)
     texto_completo = "\n".join(lineas_texto)
     
-    # Expresiones regulares para buscar campos clave
-    pack_match = re.search(r'(?:Pack ID|Pack|ID)[:\s]*(\d{10,18})', texto_completo, re.IGNORECASE)
-    envio_match = re.search(r'(?:Envío|Envio)[:\s]*(\d{8,15})', texto_completo, re.IGNORECASE)
+    # Reemplazo de caracteres comúnmente confundidos por el OCR
+    texto_normalizado = texto_completo.replace('ZOO', '200').replace('ZO0', '200').replace('Z00', '200')
+    
+    # Búsqueda de Pack ID (flexibilidad para capturar secuencias numéricas largas)
+    pack_match = re.search(r'(?:Pack\s*ID|Pack)[:\s]*[A-Z0-9]*\s*(\d{10,18})', texto_normalizado, re.IGNORECASE)
+    if not pack_match:
+        pack_match = re.search(r'\b(20000\d{10,12}|150\d{7,12})\b', texto_normalizado)
+        
+    # Búsqueda de Envío ID / Tracking
+    envio_match = re.search(r'(?:Env[íi]o|Tracking)[:\s]*([0-9\sV]+)', texto_normalizado, re.IGNORECASE)
+    envio_id = ""
+    if envio_match:
+        envio_id = re.sub(r'\D', '', envio_match.group(1))
+    if not envio_id or len(envio_id) < 5:
+        alt_envio = re.search(r'\b(480\d{7,10}|48\s*\d{4,10})\b', texto_normalizado)
+        if alt_envio:
+            envio_id = re.sub(r'\D', '', alt_envio.group(1))
+            
+    # Búsqueda de Código Postal (CP)
     cp_match = re.search(r'\bCP[:\s]*(\d{4})\b', texto_completo, re.IGNORECASE)
+    if not cp_match:
+        cp_match = re.search(r'\b(\d{4})\b', texto_completo)
+        
+    # Extracción de campos adicionales de la etiqueta
+    dir_match = re.search(r'Direcci[oó]n[:\s]*(.*)', texto_completo, re.IGNORECASE)
+    dest_match = re.search(r'Destinatario[:\s]*(.*)', texto_completo, re.IGNORECASE)
+    ref_match = re.search(r'Referencia[:\s]*(.*)', texto_completo, re.IGNORECASE)
     
     servicio = "FLEX" if "FLEX" in texto_completo.upper() else ""
     
     return {
         "pack_id": pack_match.group(1) if pack_match else "",
-        "envio_id": envio_match.group(1) if envio_match else "",
+        "envio_id": envio_id,
+        "destinatario": dest_match.group(1).strip() if dest_match else "",
+        "direccion": dir_match.group(1).strip() if dir_match else "",
+        "referencia": ref_match.group(1).strip() if ref_match else "",
         "cp": cp_match.group(1) if cp_match else "",
         "servicio": servicio,
         "texto_extraido": texto_completo
@@ -93,7 +116,7 @@ if archivos_a_procesar:
             csv_data = df.to_csv(index=False).encode('utf-8')
             st.download_button(
                 label="📥 Descargar Tabla en CSV",
-                data=csv_data,
+                data=excel_data if 'excel_data' in locals() else csv_data,
                 file_name="etiquetas_procesadas_local.csv",
                 mime="text/csv"
             )
